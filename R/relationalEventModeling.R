@@ -22,7 +22,7 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
 
   .remUploadActorData(jaspResults, options)
   .remUploadDyadData(jaspResults, options)
-  .remUploadDyadExcludeData(jaspResults, options)
+  .remUploadDyadIncludeData(jaspResults, options)
 
   # fill the qml componentsLists
   .feedbackExoTableVariablesEvents(jaspResults, options)
@@ -78,11 +78,16 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
   mainContainer <- createJaspContainer()
   mainContainer$dependOn(c("timeVariable", "actorVariableSender", "actorVariableReceiver", "weightVariable", "typeVariable",
                            "syncAnalysisBox", "eventDirection", "eventSequence", "orientation", "riskset",
-                           "naAction", "endogenousEffects", "specifiedExogenousEffects",
-                           "interactionEffects", "endogenousEffectsSender", "exogenousEffectsSender",
+                           "endogenousEffects", "specifiedExogenousEffects",
+                           "interactionEffects", "endogenousEffectsSender", "specifiedExogenousEffectsSender",
                            "interactionEffectsSender", "eventHistory", "eventHistorySingleInput",
                            "eventHistoryIntervalInputLower", "eventHistoryIntervalInputUpper", "timepointInputLower",
-                           "timepointInputUpper", "simultaneousEvents", "dyadExclude"))
+                           "timepointInputUpper", "dyadInclude", "extendRisksetByType",
+                           # the exogenous effect tables decide which covariates (and therefore which data
+                           # columns) enter the model, the upload lists decide what those covariates contain
+                           "exogenousEffectsTableActors", "exogenousEffectsTableSender",
+                           "exogenousEffectsTableEvents", "exogenousEffectsTableDyads",
+                           "actorDataList", "dyadDataList"))
   jaspResults[["mainContainer"]] <- mainContainer
 
   return()
@@ -168,32 +173,32 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
 }
 
 
-.remUploadDyadExcludeData <- function(jaspResults, options) {
+.remUploadDyadIncludeData <- function(jaspResults, options) {
 
-  if (!is.null(jaspResults[["dyadExcludeState"]]$object) || options[["riskset"]] != "manual" ||
-      is.null(options[["dyadExclude"]])) return()
+  if (!is.null(jaspResults[["dyadIncludeState"]]$object) || options[["riskset"]] != "manual" ||
+      is.null(options[["dyadInclude"]])) return()
 
-  if (options[["dyadExclude"]] == "") return()
+  if (options[["dyadInclude"]] == "") return()
 
-  bsName <- basename(options[["dyadExclude"]])
+  bsName <- basename(options[["dyadInclude"]])
   attrName <- gsub("\\..*","", bsName)
   ending <- sub(".*(\\..*)", "\\1", bsName)
 
   if (ending == ".csv") {
-    dyadDt <- read.csv(options[["dyadExclude"]], row.names = NULL, check.names = FALSE)
+    dyadDt <- read.csv(options[["dyadInclude"]], row.names = NULL, check.names = FALSE)
   } else if (ending == ".txt") {
-    dyadDt <- read.delim(options[["dyadExclude"]], row.names = NULL, check.names = FALSE)
+    dyadDt <- read.delim(options[["dyadInclude"]], row.names = NULL, check.names = FALSE)
   }
 
   cnames <- colnames(dyadDt)
   if (!all(c("actor1", "actor2") %in% cnames)) {
-    .quitAnalysis(gettext("The columns in the dyad exclude data file should be named 'actor1' and 'actor2'"))
+    .quitAnalysis(gettext("The columns in the dyads-to-include data file should be named 'actor1' and 'actor2'"))
   }
 
   dyadDt <- dyadDt[, c("actor1", "actor2")]
-  dyadExcludeState <- createJaspState(dyadDt)
-  dyadExcludeState$dependOn(c("riskset", "dyadExclude"))
-  jaspResults[["dyadExcludeState"]] <- dyadExcludeState
+  dyadIncludeState <- createJaspState(dyadDt)
+  dyadIncludeState$dependOn(c("riskset", "dyadInclude"))
+  jaspResults[["dyadIncludeState"]] <- dyadIncludeState
 
   return()
 }
@@ -262,6 +267,7 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
       }
     }
     dyadFindState <- createJaspState(dyadFind)
+    dyadFindState$dependOn("dyadDataList")
     jaspResults[["dyadFindState"]] <- dyadFindState
   }
 
@@ -316,30 +322,21 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
   })
   specEndos <- which(!sapply(endosSave, is.null))
   outEndoList <- lapply(endos[specEndos], function(x) x[["translatedName"]])
-  # does any endo effect have type = both
+  # type-considered effects (separate/interact) are offered as a single "(type)" term
   endoType <- sapply(endos[specEndos], function(x) {
     x[["endogenousEffectsConsiderType"]]
   })
-  # first add the "type" string to all the type-yes instances
-  indYes <- which(endoType == "yes")
-  if (length(indYes) > 0)
-    outEndoList[indYes] <- paste0(outEndoList[indYes], "(type)")
+  indType <- which(endoType %in% c("separate", "interact"))
+  if (length(indType) > 0)
+    outEndoList[indType] <- paste0(outEndoList[indType], "(type)")
 
   outEndoListX <- outEndoList
-  # now take care of the type-both instances
-  indBoth <- which(endoType == "both")
-  if (length(indBoth) > 0) {
-    newInd <- sort(c(indBoth + seq_len(length(indBoth)), indBoth + seq_len(length(indBoth)) - 1))
-    outEndoListX <- vector("character", length = length(outEndoList) + length(indBoth))
-    tmp <- rep(outEndoList[indBoth], each = 2)
-    tmp[seq(2, length(newInd), by = 2)] <- paste0(tmp[seq(2, length(newInd), by = 2)], "(type)")
-    outEndoListX[newInd] <- tmp
-    outEndoListX[-newInd] <- outEndoList[-indBoth]
-  }
 
-  combList <- combListSender <- NULL
-  if ((length(outExoList) + length(outEndoListX)) >= 2) {
-    combList <- c(unlist(outEndoListX), unlist(outExoList))
+  combListSender <- NULL
+  # the full effect list is also used for the residual plot picker, so it is built regardless of
+  # whether there are enough effects to form an interaction
+  combList <- c(unlist(outEndoListX), unlist(outExoList))
+  if (length(combList) >= 2) {
     interTmp <- combn(combList, m = 2)
     inters <- as.list(paste0(interTmp[1, ], " : ", interTmp[2, ]))
 
@@ -357,24 +354,18 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
     })
     specEndosSender <- which(!sapply(endosSaveSender, is.null))
     outEndoListSender <- lapply(endosSender[specEndosSender], function(x) x[["translatedNameSender"]])
-    outEndoListXSender <- outEndoListSender
-    # does any endo effect have type = both
+    # type-considered sender effects (separate/interact) are offered as a single "(type)" term
     endoTypeSender <- sapply(endosSender[specEndosSender], function(x) {
       x[["endogenousEffectsConsiderTypeSender"]]
     })
-    indBothSender <- which(endoTypeSender == "both")
-    if (length(indBothSender) > 0) {
-      newIndSender <- sort(c(indBothSender + seq_len(length(indBothSender)), indBothSender + seq_len(length(indBothSender)) - 1))
-      outEndoListXSender <- vector("character", length = length(outEndoListSender) + length(indBothSender))
-      tmpSender <- rep(outEndoListSender[indBothSender], each = 2)
-      tmpSender[seq(2, length(newIndSender), by = 2)] <- paste0(tmpSender[seq(2, length(newIndSender), by = 2)], "(type)")
-      outEndoListXSender[newIndSender] <- tmpSender
-      outEndoListXSender[-newIndSender] <- outEndoListSender[-indBothSender]
-    }
+    indTypeSender <- which(endoTypeSender %in% c("separate", "interact"))
+    if (length(indTypeSender) > 0)
+      outEndoListSender[indTypeSender] <- paste0(outEndoListSender[indTypeSender], "(type)")
+    outEndoListXSender <- outEndoListSender
 
-    if ((length(outExoListSender) + length(outEndoListXSender)) >= 2) {
+    combListSender <- c(unlist(outEndoListXSender), unlist(outExoListSender))
+    if (length(combListSender) >= 2) {
 
-      combListSender <- c(unlist(outEndoListXSender), unlist(outExoListSender))
       interTmpSender <- combn(combListSender, m = 2)
       intersSender <- as.list(paste0(interTmpSender[1, ], " : ", interTmpSender[2, ]))
 
@@ -385,12 +376,12 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
 
   }
 
-  # so lets save the effects for using them later too source in the plot effects
-  if (!is.null(combList) || !is.null(combListSender)) {
-    saveOut <- c(combList, combListSender)
-    saveState <- createJaspState(saveOut)
-    jaspResults[["savedEffects"]] <- saveState
-  }
+  # so lets save the effects for using them later too source in the plot effects;
+  # stored unconditionally so that shrinking the model clears the previous, larger list
+  saveState <- createJaspState(c(combList, combListSender))
+  saveState$dependOn(c("orientation", "endogenousEffects", "specifiedExogenousEffects",
+                       "endogenousEffectsSender", "specifiedExogenousEffectsSender"))
+  jaspResults[["savedEffects"]] <- saveState
 
 
   return()
@@ -426,10 +417,9 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
   savedEffects <- as.list(savedEffects)
 
   savedSource <- createJaspQmlSource("effectsForPlot", savedEffects)
-  savedSource$dependOn(c("endogenousEffects", "specifiedExogenousEffects",
+  savedSource$dependOn(c("orientation", "endogenousEffects", "specifiedExogenousEffects",
                          "endogenousEffectsSender", "specifiedExogenousEffectsSender",
-                         "interactionEffects", "interactionEffecsSender",
-                         "includeInteractionEffect", "includeInteractionEffectSender"))
+                         "interactionEffects", "interactionEffectsSender"))
   jaspResults[["effectsForPlot"]] <- savedSource
 
 }
@@ -489,7 +479,8 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
 
   if (length(specExoEffects) > 0) {
     exoEffectsState <- createJaspState(specExoEffects)
-    exoEffectsState$dependOn(c("exogenousEffectsTableEvents",
+    exoEffectsState$dependOn(c("orientation",
+                               "exogenousEffectsTableEvents",
                                "exogenousEffectsTableActors",
                                "exogenousEffectsTableDyads",
                                "exogenousEffectsTableSender"))
@@ -523,11 +514,17 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
     tmp1 <- lapply(exoEffects, function(x) names(x) == "event")
     tmp2 <- unlist(lapply(tmp1, any))
     eventNames <- unique(names(tmp2[tmp2]))
-    eventIndices <- which(eventNames == decodeColNames(colnames(dataset)))
+    eventIndices <- which(decodeColNames(colnames(dataset)) %in% eventNames)
     variables <- c(variables, colnames(dataset)[eventIndices])
   }
 
   dataset <- dataset[, variables]
+
+  # listwise deletion happens here (and only here) so that remify, remstats and the covariate
+  # objects all see the exact same event sequence
+  if (anyNA(dataset)) {
+    dataset <- dataset[complete.cases(dataset), ]
+  }
 
   colnames(dataset)[1:3] <- jaspBase::encodeColNames(c("time", "actor1", "actor2"))
 
@@ -593,10 +590,7 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
   if (!is.null(jaspResults[["remifyResultState"]]$object))
     return()
 
-  # is there any other naAction even possible?
-  if (anyNA(dataset)) {
-    dataset <- dataset[complete.cases(dataset), ]
-  }
+  # incomplete rows were already dropped in .remHandleData
 
   # could be the time is in a weird format:
   if (is.factor(dataset[, 1]) || is.character(dataset[, 1])) {
@@ -621,22 +615,32 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
     directed <- TRUE
   }
 
-  if (!is.null(jaspResults[["dyadExcludeState"]][["object"]])) {
-    dtExclude <- jaspResults[["dyadExcludeState"]][["object"]]
-    dtExclude <- lapply(dtExclude, as.character)
-    dtExclude$type <- NA
-
-    omitDyad <- list(list(time = c(NA,NA), dyad = dtExclude))
+  if (!is.null(jaspResults[["dyadIncludeState"]][["object"]])) {
+    # remify >= 4.0's manual.riskset is the data.frame of dyads that make up the risk
+    # set over the whole sequence, so the uploaded file *is* the risk set (NA acts as a
+    # wildcard for any actor). remify additionally re-adds all observed dyads.
+    manualRiskset <- jaspResults[["dyadIncludeState"]][["object"]]
+    manualRiskset <- data.frame(lapply(manualRiskset, as.character), stringsAsFactors = FALSE)
   } else {
-    omitDyad <- NULL
+    manualRiskset <- NULL
   }
+
+  # a manual riskset without an uploaded include file is equivalent to the full one,
+  # but remify errors on riskset = "manual" without a manual_riskset data.frame
+  risksetType <- options[["riskset"]]
+  if (risksetType == "manual" && is.null(manualRiskset))
+    risksetType <- "full"
+
+  # extend_riskset_by_type only applies when a type variable is present
+  extendByType <- options[["extendRisksetByType"]] && options[["typeVariable"]] != ""
 
   rehObject <- try(remify::remify(edgelist = dataset,
                                   directed = directed,
                                   ordinal = options[["eventSequence"]] == "orderOnly",
                                   model = options[["orientation"]],
-                                  riskset = options[["riskset"]],
-                                  omit_dyad = omitDyad))
+                                  riskset = risksetType,
+                                  manual_riskset = manualRiskset,
+                                  extend_riskset_by_type = extendByType))
 
   if (isTryError(rehObject)) {
     jaspResults[["mainContainer"]]$setError(gettextf("Remify failed. Internal error message: %s", .extractErrorMessage(rehObject)))
@@ -644,9 +648,13 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
 
   remifyResultState <- createJaspState(rehObject)
   remifyResultState$dependOn(c("eventDirection", "eventSequence",
-                               "orientation", "riskset", "naAction", "weightVariable",
-                               "timeVariable", "actorVariableSender", "actorVariableReceiver", "weightVariable",
-                               "typeVariable", "syncAnalysisBox", "dyadExclude"))
+                               "orientation", "riskset", "weightVariable",
+                               "timeVariable", "actorVariableSender", "actorVariableReceiver",
+                               "typeVariable", "syncAnalysisBox", "dyadInclude", "extendRisksetByType",
+                               # these decide which columns .remHandleData keeps and therefore which
+                               # rows survive listwise deletion, so they change the event sequence
+                               "exogenousEffectsTableActors", "exogenousEffectsTableSender",
+                               "exogenousEffectsTableEvents", "exogenousEffectsTableDyads"))
 
   jaspResults[["remifyResultState"]] <- remifyResultState
 
@@ -667,7 +675,7 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
   rehObject <- jaspResults[["remifyResultState"]]$object
 
   if ((length(actorDataList) > 0) && !isTryError(rehObject)) {
-    actorNames <- attr(rehObject, "dictionary")[["actors"]][["actorName"]]
+    actorNames <- rehObject[["meta"]][["dictionary"]][["actors"]][["actorName"]]
     for (i in 1:length(actorDataList)) {
       nameVar <- actorDataList[[i]][, "name"]
       if (!all(actorNames %in% nameVar)) {
@@ -691,8 +699,7 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
 
 .remRemstats <- function(jaspResults, dataset, options) {
 
-  if (!is.null(jaspResults[["mainContainer"]][["remstatsResultStateStorage"]]$object) &&
-      !is.null(jaspResults[["mainContainer"]][["remstatsResultState"]]$object)) return()
+  if (!is.null(jaspResults[["mainContainer"]][["remstatsResultState"]]$object)) return()
 
   rehObject <- jaspResults[["remifyResultState"]]$object
 
@@ -716,8 +723,11 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
     senders <- effectsObjSender$effects
   }
 
-  # prepare the data for remstats, aka, assign the attributes to objects so they are present for remstats
-  .prepareCovariateData(jaspResults, dataset, options)
+  # prepare the data for remstats, aka, assign the attributes to objects so they are present for remstats;
+  # they are removed again as soon as remstats has resolved the formula, so that a later run can never
+  # silently resolve an effect against this run's data
+  covariateObjects <- .prepareCovariateData(jaspResults, dataset, options)
+  on.exit(rm(list = covariateObjects, envir = globalenv()), add = TRUE)
 
   # prepare some more options for remstats
   memoryValues <- switch(options[["eventHistory"]],
@@ -726,171 +736,43 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
                          "full" = NULL,
                          "decay" = options[["eventHistorySingleInput"]])
 
-  # how to treat simultaenous events:
-  simMethod <- ifelse(options[["simultaneousEvents"]] == "join", "pt", "pe")
+  # remstats >= 4.0 no longer has a method argument for treating simultaneous events;
+  # statistics are always computed per unique time point (the former "join"/"pt" behavior)
 
-  # check if there is already a statsObject in storage, if null we are in the first round of calculations
-  # or maybe the user did not choose to save the samples
-  if (is.null(jaspResults[["mainContainer"]][["remstatsResultStateStorage"]]$object) ||
-      !options[["oldEffectsSaved"]]) {
-
-    # when model is ordinal, and no effects are specified, there is no baseline so we need an error
-    if (all(sapply(c(ties, senders, receivers), is.null))) {
-      jaspResults[["mainContainer"]]$setError(gettext("No effects were specified."))
-      return()
-    }
-
-    # in the first round both states are created
-
-    statsObject <- try(remstats::remstats(reh = rehObject, tie_effects = ties, sender_effects = senders,
-                                          receiver_effects = receivers,
-                                          memory = options[["eventHistory"]], memory_value = memoryValues,
-                                          start = options[["timepointInputLower"]],
-                                          stop = as.numeric(options[["timepointInputUpper"]]),
-                                          method = simMethod))
-
-    if (isTryError(statsObject)) {
-      jaspResults[["mainContainer"]]$setError(gettextf("Remstats failed. Internal error message: %s",
-                                                       .extractErrorMessage(statsObject)))
-      return()
-    } else {
-      # specify a new attribute to save the formula, since the actor oriented object does not have the same
-      # formula structure as the tie oriented
-      attr(statsObject, "formulaJasp") <- effectsObj$effects
-      if (options[["orientation"]] == "tie") {
-        dimnames(statsObject)[[3]] <- effectsObj$dimNames
-
-      } else {
-        attr(statsObject, "formulaJaspSender") <- effectsObjSender$effects
-        dimnames(statsObject[["sender_stats"]])[[3]] <- effectsObjSender$dimNames
-        # somehow the baseline is only part of the sender model
-        dimnames(statsObject[["receiver_stats"]])[[3]] <- effectsObj$dimNames
-      }
-    }
-
-    remstatsResultState <- createJaspState(statsObject)
-
-    remstatsResultStateStorage <- createJaspState(statsObject)
-    jaspResults[["mainContainer"]][["remstatsResultStateStorage"]] <- remstatsResultStateStorage
-
-  } else {
-
-    statsObjectOld <- jaspResults[["mainContainer"]][["remstatsResultStateStorage"]]$object
-    formulaOld <- attr(statsObjectOld, "formulaJasp")
-    dimNamesOldSender <- formulaOldSender <- NULL
-
-    if (options[["orientation"]] == "tie") {
-
-      dimNamesOld <- dimnames(statsObjectOld)[[3]]
-      # match the current specified effects with the effects that have been calculated in the past
-      # return the "new" effects,
-      effsMatched <- .matchEffectsForStats(formulaOld, effectsObj$effects, dimNamesOld, effectsObj$dimNames)
-      ties <- effsMatched$form
-      if (is.null(ties)) { # if no new effects, we can just continue with the old object and calculate nothing new
-        statsObjectCombined <- statsObject <- statsObjectOld
-
-      } else {
-
-        statsObject <- try(remstats::remstats(reh = rehObject, tie_effects = ties,
-                                              memory = options[["eventHistory"]], memory_value = memoryValues,
-                                              start = options[["timepointInputLower"]],
-                                              stop = options[["timepointInputUpper"]],
-                                              method = simMethod))
-
-        # add the jasp-detailed dimnames to the whole thing.
-        if (isTryError(statsObject)) {
-          jaspResults[["mainContainer"]]$setError(gettextf("Remstats failed. Internal error message: %s",
-                                                           .extractErrorMessage(statsObject)))
-          return()
-        } else {
-          attr(statsObject, "formulaJasp") <- effsMatched$form
-          dimnames(statsObject)[[3]] <- effsMatched$dimNamesNew
-        }
-
-        # bind the current and the old statsobject together, remstats should by itself take care of duplicates
-        # and deal with those, aka, not bind them twice
-        statsObjectCombined <- remstats::bind_remstats(statsObjectOld, statsObject)
-        attr(statsObjectCombined, "formulaJasp") <- effsMatched$formComb
-
-      }
-
-      jaspResults[["mainContainer"]][["remstatsResultStateStorage"]]$object <- statsObjectCombined
-
-      sliced <- statsObjectCombined[, , effectsObj$dimNames, drop = FALSE]
-      attr(sliced, "riskset") <- attr(statsObjectCombined, "riskset")
-      attr(sliced, "class") <- attr(statsObjectCombined, "class")
-      attr(sliced, "model") <- attr(statsObjectCombined, "model")
-      attr(sliced, "formulaJasp") <- effectsObj$effects
-
-    } else {
-
-      dimNamesOld <- dimnames(statsObjectOld[["receiver_stats"]])[[3]]
-      dimNamesOldSender <- dimnames(statsObjectOld[["sender_stats"]])[[3]]
-      formulaOldSender <- attr(statsObjectOld, "formulaJaspSender")
-
-      # this get the receiver effects
-      effsMatched <- .matchEffectsForStats(formulaOld, effectsObj$effects, dimNamesOld, effectsObj$dimNames)
-      effsMatchedSender <- .matchEffectsForStats(formulaOldSender, effectsObjSender$effects, dimNamesOldSender,
-                                             effectsObjSender$dimNames)
-      receiversNew <- effsMatched$form
-      sendersNew <- effsMatchedSender$form
-
-      if (is.null(receiversNew) && is.null(sendersNew)) { # if no new effects, we can just continue with the old object and calculate nothing new
-        statsObjectCombined <- statsObject <- statsObjectOld
-
-      } else {
-
-        statsObject <- try(remstats::remstats(reh = rehObject, receiver_effects = receiversNew,
-                                              sender_effects = sendersNew,
-                                              memory = options[["eventHistory"]], memory_value = memoryValues,
-                                              start = options[["timepointInputLower"]],
-                                              stop = options[["timepointInputUpper"]],
-                                              method = simMethod))
-
-        # add the jasp-detailed dimnames to the whole thing.
-        if (isTryError(statsObject)) {
-          jaspResults[["mainContainer"]]$setError(gettextf("Remstats failed. Internal error message: %s",
-                                                           .extractErrorMessage(statsObject)))
-          return()
-
-        } else {
-          attr(statsObject, "formulaJasp") <- effsMatched$form
-          attr(statsObject, "formulaJaspSender") <- effsMatchedSender$form
-          if (!is.null(statsObject[["receiver_stats"]]))
-            dimnames(statsObject[["receiver_stats"]])[[3]] <- effsMatched$dimNamesNew[!effsMatched$dimNamesNew == "baseline"]
-          if (!is.null(statsObject[["sender_stats"]]))
-            dimnames(statsObject[["sender_stats"]])[[3]] <- effsMatchedSender$dimNamesNew
-        }
-
-        # bind the current and the old statsobject together, remstats should by itself take care of duplicates
-        #  aka, not bind them twice
-        statsObjectCombined <- remstats::bind_remstats(statsObjectOld, statsObject)
-        attr(statsObjectCombined, "formulaJasp") <- effsMatched$formComb
-        attr(statsObjectCombined, "formulaJaspSender") <- effsMatchedSender$formComb
-
-      }
-
-      jaspResults[["mainContainer"]][["remstatsResultStateStorage"]]$object <- statsObjectCombined
-
-      sliced <- list()
-      if (!is.null(receivers))
-        sliced$receiver_stats <- statsObjectCombined[["receiver_stats"]][, , effectsObj$dimNames, drop = FALSE]
-      if (!is.null(senders))
-        sliced$sender_stats <- statsObjectCombined[["sender_stats"]][, , effectsObjSender$dimNames, drop = FALSE]
-      attr(sliced, "class") <- attr(statsObjectCombined, "class")
-      attr(sliced, "model") <- attr(statsObjectCombined, "model")
-      attr(sliced, "actors") <- attr(statsObjectCombined, "actors")
-      attr(sliced, "formulaJasp") <- effectsObj$effects
-      attr(sliced, "formulaJaspSender") <- effectsObjSender$effects
-
-    }
-
-    remstatsResultState <- createJaspState(sliced)
-
+  # when model is ordinal, and no effects are specified, there is no baseline so we need an error
+  if (all(sapply(c(ties, senders, receivers), is.null))) {
+    jaspResults[["mainContainer"]]$setError(gettext("No effects were specified."))
+    return()
   }
 
-  remstatsResultState$dependOn("oldEffectsSaved")
-  jaspResults[["mainContainer"]][["remstatsResultState"]] <- remstatsResultState
+  # remstats >= 4.1 renamed the fitting window arguments start/stop to first/last (event indices,
+  # first = 2 by default because the first event only initialises the statistics)
+  statsObject <- try(remstats::remstats(reh = rehObject, tie_effects = ties, sender_effects = senders,
+                                        receiver_effects = receivers,
+                                        memory = options[["eventHistory"]], memory_value = memoryValues,
+                                        first = options[["timepointInputLower"]],
+                                        last = as.numeric(options[["timepointInputUpper"]])))
+
+  if (isTryError(statsObject)) {
+    jaspResults[["mainContainer"]]$setError(gettextf("Remstats failed. Internal error message: %s",
+                                                     .extractErrorMessage(statsObject)))
+    return()
+  }
+
+  # specify a new attribute to save the formula, since the actor oriented object does not have the same
+  # formula structure as the tie oriented
+  attr(statsObject, "formulaJasp") <- effectsObj$effects
+  if (options[["orientation"]] == "tie") {
+    dimnames(statsObject)[[3]] <- effectsObj$dimNames
+
+  } else {
+    attr(statsObject, "formulaJaspSender") <- effectsObjSender$effects
+    dimnames(statsObject[["sender_stats"]])[[3]] <- effectsObjSender$dimNames
+    # somehow the baseline is only part of the sender model
+    dimnames(statsObject[["receiver_stats"]])[[3]] <- effectsObj$dimNames
+  }
+
+  jaspResults[["mainContainer"]][["remstatsResultState"]] <- createJaspState(statsObject)
 
   return()
 
@@ -907,7 +789,17 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
 
   if (jaspResults[["mainContainer"]]$getError()) return()
 
-  fit <- try(remstimate::remstimate(reh = rehObject, stats = statsObject, method = options[["method"]]))
+  # the method group is hidden in the UI so this is always MLE; guard legacy .jasp files
+  # that still carry method = "BSIR" so they fail with a clear message
+  if (options[["method"]] != "MLE") {
+    jaspResults[["mainContainer"]]$setError(gettextf("The estimation method '%s' is not currently available. Please use maximum likelihood estimation (MLE).",
+                                                     options[["method"]]))
+    return()
+  }
+
+  # remstimate >= 3.1 replaced method = "MLE" with approach = "frequentist" ("method" still
+  # works but is deprecated)
+  fit <- try(remstimate::remstimate(reh = rehObject, stats = statsObject, approach = "frequentist"))
 
   if (isTryError(fit)) { # try error
     jaspResults[["mainContainer"]]$setError(gettextf("Remstimate failed. Internal error message: %s", .extractErrorMessage(fit)))
@@ -1069,9 +961,6 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
 
 
   # add statistics options in footnote
-  simEvents <- switch(options[["simultaneousEvents"]],
-                      "join" = "joined",
-                      options[["simultaneousEvents"]])
   eventHistory <- switch(options[["eventHistory"]],
                          "window" = gettextf("a window with %s time units", options[["eventHistorySingleInput"]]),
                          "interval" = gettextf("an interval from %1$s to %2$s",
@@ -1079,8 +968,7 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
                                                options[["eventHistoryIntervalInputUpper"]]),
                          "decay" = gettextf("decaying with half-life time of %s", options[["eventHistorySingleInput"]]),
                          options[["eventHistory"]])
-  modelFitTable$addFootnote(gettextf("Simultaneous events are %1$s. Event history is considered as %2$s.",
-                                     simEvents, eventHistory))
+  modelFitTable$addFootnote(gettextf("Event history is considered as %1$s.", eventHistory))
 
   return()
 }
@@ -1238,13 +1126,14 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
   if (!is.null(jaspResults[["mainContainer"]][["plotContainer"]])) return()
 
   plotContainer <- createJaspContainer()
-  plotContainer$dependOn(c("method", "diagnosticPlots", "diagnosticPlotWaitTime", "residualPlotSelect"))
+  plotContainer$dependOn(c("method", "diagnosticPlots", "diagnosticPlotWaitTime", "diagnosticPlotRecall", "residualPlotSelect"))
   jaspResults[["mainContainer"]][["plotContainer"]] <- plotContainer
 
 
   if (ready && options[["syncAnalysisBox"]] && !jaspResults[["mainContainer"]]$getError()
       && options[["diagnosticPlots"]]) {
 
+    selected <- character(0)
     if (length(options[["residualPlotSelect"]]) > 0) {
       selected <- lapply(options[["residualPlotSelect"]], function(x) {
         if (x[["includePlotEffect"]]) x[["value"]] else NULL
@@ -1252,7 +1141,7 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
       selected <- unlist(selected[which(!sapply(selected, is.null))])
     }
 
-    if (options[["diagnosticPlotWaitTime"]] || length(selected) > 0) {
+    if (options[["diagnosticPlotWaitTime"]] || length(selected) > 0 || isTRUE(options[["diagnosticPlotRecall"]])) {
 
       rehObject <- jaspResults[["remifyResultState"]]$object
       statsObject <- jaspResults[["mainContainer"]][["remstatsResultState"]]$object
@@ -1277,6 +1166,41 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
         }
       }
 
+      if (isTRUE(options[["diagnosticPlotRecall"]])) {
+
+        recallList <- if (options[["orientation"]] == "tie") {
+          list(list(recall = diagnos$recall, role = "", key = "tie", title = gettext("Recall")))
+        } else {
+          list(
+            list(recall = diagnos$sender_model$recall, role = gettext("Sender"),
+                 key = "sender", title = gettext("Recall (Sender Model)")),
+            list(recall = diagnos$receiver_model$recall, role = gettext("Receiver"),
+                 key = "receiver", title = gettext("Recall (Receiver Model)"))
+          )
+        }
+
+        recallContainer <- createJaspContainer(gettext("Recall Diagnostics"))
+        recallContainer$dependOn("diagnosticPlotRecall")
+        plotContainer[["recallContainer"]] <- recallContainer
+
+        pos <- 1
+        for (rc in recallList) {
+          if (is.null(rc$recall) || is.null(rc$recall$per_event)) next
+
+          plotObj <- try(.plotRecallHelper(rc$recall, rc$role))
+          recallPlot <- createJaspPlot(plot = NULL, title = rc$title, height = 500, width = 700)
+          recallPlot$position <- pos
+          pos <- pos + 1
+          recallContainer[[rc$key]] <- recallPlot
+
+          if (isTryError(plotObj)) {
+            recallPlot$setError(gettextf("Recall diagnostics plot failed with error: %1$s", .extractErrorMessage(plotObj)))
+          } else {
+            recallPlot$plotObject <- plotObj
+          }
+        }
+      }
+
       if (length(selected) > 0) {
         residualsPlotContainer <- createJaspContainer(gettext("Schoenfeld's Residuals Fit"))
         residualsPlotContainer$dependOn("residualPlotSelect")
@@ -1285,12 +1209,12 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
         if (options[["orientation"]] == "tie") {
 
           toPlotTie <- .matchJaspPlotEffects(selected, attr(remstimateObject$coefficients, "name"))
-          for (pp in seq_len(length(toPlotTie))) {
-            plotObj <- .plotFunHelper(remstimateObject, rehObject, diagnos, wh = 2, effects = toPlotTie[pp],
+          for (pp in seq_len(length(toPlotTie$coef))) {
+            plotObj <- .plotFunHelper(remstimateObject, rehObject, diagnos, wh = 2, effects = toPlotTie$coef[pp],
                                       send_effects = NULL, rec_effects = NULL)
-            residualsPlot <- createJaspPlot(plot = NULL, title = selected[pp], height = 400)
+            residualsPlot <- createJaspPlot(plot = NULL, title = toPlotTie$label[pp], height = 400)
             residualsPlot$position <- pp
-            residualsPlotContainer[[toPlotTie[pp]]] <- residualsPlot
+            residualsPlotContainer[[toPlotTie$coef[pp]]] <- residualsPlot
 
             if (isTryError(plotObj)) {
               residualsPlot$setError(gettextf("Residual diagnostics plot failed with error: %1$s", .extractErrorMessage(plotObj)))
@@ -1306,14 +1230,13 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
           jaspResults[["mainContainer"]][["plotContainer"]][["residualsContainerReceiver"]] <- residualsPlotContainerReceiver
 
           toPlotReceiver <- .matchJaspPlotEffects(selected, attr(remstimateObject$receiver_model$coefficients, "name"))
-          toPlotReceiver<- toPlotReceiver[!is.na(toPlotReceiver)]
-          if (length(toPlotReceiver) > 0) {
-            for (pp in seq_len(length(toPlotReceiver))) {
+          if (length(toPlotReceiver$coef) > 0) {
+            for (pp in seq_len(length(toPlotReceiver$coef))) {
               plotObj <- .plotFunHelper(remstimateObject, rehObject, diagnos, wh = 2, effects = NULL,
-                                        send_effects = NULL, rec_effects = toPlotReceiver[[pp]])
+                                        send_effects = NULL, rec_effects = toPlotReceiver$coef[pp])
               residualsPlot <- createJaspPlot(plot = NULL, title = "", height = 400)
               residualsPlot$position <- pp
-              residualsPlotContainerReceiver[[toPlotReceiver[pp]]] <- residualsPlot
+              residualsPlotContainerReceiver[[toPlotReceiver$coef[pp]]] <- residualsPlot
 
               if (isTryError(plotObj)) {
                 residualsPlot$setError(gettextf("Residual diagnostics plot failed with error: %1$s", .extractErrorMessage(plotObj)))
@@ -1328,15 +1251,14 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
           jaspResults[["mainContainer"]][["plotContainer"]][["residualsContainerSender"]] <- residualsPlotContainerSender
 
           toPlotSender <- .matchJaspPlotEffects(selected, attr(remstimateObject$sender_model$coefficients, "name"))
-          toPlotSender <- toPlotSender[!is.na(toPlotSender)]
 
-          if (length(toPlotSender) > 0) {
-            for (pp in seq_len(length(toPlotSender))) {
+          if (length(toPlotSender$coef) > 0) {
+            for (pp in seq_len(length(toPlotSender$coef))) {
               plotObj <- .plotFunHelper(remstimateObject, rehObject, diagnos, wh = 2, effects = NULL,
-                                        send_effects = toPlotSender[pp], rec_effects = NULL)
+                                        send_effects = toPlotSender$coef[pp], rec_effects = NULL)
               residualsPlot <- createJaspPlot(plot = NULL, title = "", height = 400)
               residualsPlot$position <- pp
-              residualsPlotContainerSender[[toPlotSender[pp]]] <- residualsPlot
+              residualsPlotContainerSender[[toPlotSender$coef[pp]]] <- residualsPlot
 
               if (isTryError(plotObj)) {
                 residualsPlot$setError(gettextf("Residual diagnostics plot failed with error: %1$s", .extractErrorMessage(plotObj)))
@@ -1361,6 +1283,14 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
 # the following code processes the model effects
 .translateEffects <- function(jaspResults, options, sender = "", receiver = FALSE) {
 
+  # event types (in the order remify/remstats use them) drive how consider_type effects
+  # expand; interact is only possible with extend_riskset_by_type on
+  reh <- jaspResults[["remifyResultState"]]$object
+  typeLevels <- character(0)
+  if (!isTryError(reh) && !is.null(reh[["meta"]][["dictionary"]][["types"]]))
+    typeLevels <- reh[["meta"]][["dictionary"]][["types"]][["typeName"]]
+  canInteract <- isTRUE(options[["extendRisksetByType"]]) && options[["typeVariable"]] != ""
+
   effects <- "~ 1"
   # endogenous effects:
   endos <- options[[paste0("endogenousEffects", sender)]]
@@ -1371,7 +1301,7 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
 
   endoObj <- NULL
   if (length(specEndos) > 0) {
-    endoObj <- .processEndoEffects(endos[specEndos], sender)
+    endoObj <- .processEndoEffects(endos[specEndos], sender, typeLevels, canInteract)
     effects <- paste(effects, "+", endoObj$effects)
 
     # we need the R and translated jasp names of the endo effects in the coefficients table later
@@ -1405,8 +1335,12 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
     }
   }
 
-  # receiver model has no baseline, as does the model when ordinal=TRUE
-  if (receiver || (options[["orientation"]] == "tie" && options[["eventSequence"]] == "orderOnly")) {
+  # the receiver (choice) model never has a baseline; the tie and sender (rate)
+  # models have no baseline when the model is ordinal (remstats >= 4.0 ordinal
+  # stats objects omit the baseline slice entirely)
+  recText <- if (receiver) "receiver" else tolower(sender)
+  pos     <- if (receiver) 0.1 else 0.2
+  if (receiver || options[["eventSequence"]] == "orderOnly") {
     effects <- sub("1 + ", "", effects, fixed = TRUE)
     if (effects == "~ 1") {
       effects <- NULL
@@ -1414,13 +1348,9 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
       effects <- eval(parse(text = effects))
     }
     dimNms <- c(endoObj$dims, exoObj$dims, interObj$dims)
-    recText <- ifelse(receiver, "receiver", "")
-    pos <- 0.1
   } else {
     effects <- eval(parse(text = effects))
     dimNms <- c("baseline", endoObj$dims, exoObj$dims, interObj$dims)
-    recText <- tolower(sender)
-    pos <- 0.2
   }
 
   # print the effects text in the output window:
@@ -1452,7 +1382,10 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
 }
 
 # for remstats covariate variables need to be present in the environment for the corresponding effects to work:
+# returns the names of the objects that were put there, so the caller can clean them up again
 .prepareCovariateData <- function(jaspResults, dataset, options) {
+
+  assignedNames <- character(0)
 
   exoVariablesEnc <- jaspBase::encodeColNames(unique(unlist(jaspResults[["exoEffectsState"]][["object"]][["variableNames"]])))
   exoVariablesDec <- jaspBase::decodeColNames(unique(unlist(jaspResults[["exoEffectsState"]][["object"]][["variableNames"]])))
@@ -1486,6 +1419,7 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
       for (ii in 1:length(eventVariables)) {
         # this makes the variable with the according name "present" in the environment so remstats can find it
         assign(eventVariables[ii], dataset[, eventVariables[ii]], pos = 1) # dont know why pos=1 is working....
+        assignedNames <- c(assignedNames, eventVariables[ii])
       }
     }
 
@@ -1504,6 +1438,7 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
             dtObj <- jaspResults[["dyadDataState"]][["object"]][[dyadFileNames[[iii]]]]
             if (ncol(dtObj) == nrow(dtObj)) dtObj <- as.matrix(dtObj) # for wide format we need to transform into matrix
             assign(dyadFileNames[[iii]], dtObj, pos = 1)
+            assignedNames <- c(assignedNames, dyadFileNames[[iii]])
           }
         }
       }
@@ -1523,64 +1458,14 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
         for (a in 1:length(actInds)) {
           if (length(actInds[[a]]) > 0) {# because there are some integer(0) elements sometimes
             assign(actorDataNames[[a]], jaspResults[["actorDataStateNew"]][["object"]][[actorDataNames[[a]]]], pos = 1)
+            assignedNames <- c(assignedNames, actorDataNames[[a]])
           }
         }
       }
     }
   }
 
-  return()
-}
-
-# match the effects formula from an old remstats object and the current one
-# put out the formula that is all new, aka, oldFormula minus effects
-# also transform the effects to the names of the statsObject slices, as remstats puts them out
-# to use later for matching with the slices of the old object
-.matchEffectsForStats <- function(formulaOld, effects, dimNamesOld, dimNames) {
-
-  newEffects <- effects
-  formulaOldc <- as.character(formulaOld)
-  newEffectsc <- as.character(newEffects)
-
-  if (length(newEffectsc[-1]) == 1 && newEffectsc[-1] == "1") { # if there is only a baseline effect in the current specification?
-    return(list(form = NULL, formComb = NULL, dimNamesNew = NULL))
-  }
-
-  form <- strsplit(formulaOldc, split = " + ", fixed = TRUE)
-  form[[1]] <- NULL
-  form <- unlist(form)
-
-  effs <- strsplit(newEffectsc, split = " + ", fixed = TRUE)
-  effs[[1]] <- NULL
-  effs <- unlist(effs)
-
-  dupInd <- match(form, effs)
-  dupInd <- dupInd[complete.cases(dupInd)]
-
-  effsMatchedForm <- effs[-dupInd]
-
-  if (length(effsMatchedForm) > 0) {
-    effsMatchedForm <- paste0(effsMatchedForm, collapse = " + ")
-    effsMatchedForm <- paste0("~", effsMatchedForm)
-    effsMatchedForm <- eval(parse(text = effsMatchedForm))
-
-    # also export the combination of the old formula and new formula to attach to the combined object
-    formComb <- c(form, effs)
-    formCombOut <- paste0(formComb, collapse = " + ")
-    formCombOut <- paste0("~", formCombOut)
-    formCombOut <- eval(parse(text = formCombOut))
-
-    # now export the new dimnames to assign to the new statsObejct
-    dimNamesOut <- c("baseline", setdiff(dimNames, dimNamesOld))
-
-  } else {
-    effsMatchedForm <- NULL
-    formCombOut <- formulaOld
-    dimNamesOut <- NULL
-  }
-
-  return(list(form = effsMatchedForm, formComb = formCombOut, dimNamesNew = dimNamesOut))
-
+  return(unique(assignedNames))
 }
 
 
@@ -1626,89 +1511,91 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
 }
 
 
-.processEndoEffects <- function(endos, sender = "") {
+.processEndoEffects <- function(endos, sender = "", typeLevels = character(0), canInteract = FALSE) {
 
-  endoDims <- c() # also save the dimnames to later assign to the statsObject slices
-  endosR <- sapply(endos, function(x) x[["value"]])
-  endosJasp <- sapply(endos, function(x) {
-    x[[paste0("translatedName", sender)]]
-  })
-  endoScaling <- sapply(endos, function(x) {
-    x[[paste0("endogenousEffectsScaling", sender)]]
-  })
-  endoUnique <- sapply(endos, function(x) {
-    x[[paste0("endogenousEffectsUnique", sender)]]
-  })
-  endoType <- sapply(endos, function(x) {
-    x[[paste0("endogenousEffectsConsiderType", sender)]]
-  })
-  endosX <- endosR
-  endoScalingX <- endoScaling
-  endoUniqueX <- endoUnique
-  endoTypeX <- endoType
-  endosJaspX <- endosJasp
+  # consider_type values (remstats >= 4.0): "ignore", "separate" (one stat per event
+  # type) and "interact" (one stat per ordered pair of types, needs extend_riskset_by_type).
+  # remstats collapses separate/interact to ignore when there are < 2 event types and
+  # interact to separate without extend_riskset_by_type, so we mirror that when building
+  # the dimnames/labels, expanding an effect into as many slices as remstats returns.
+  nL <- length(typeLevels)
 
-  # see if the consider_type argument is somewhere specified as "both"
-  # because then we need a longer effects vector since we semi-duplicate one effect
-  indBoth <- which(endoType == "both")
+  endoEffects <- character(0)   # remstats formula terms (one per effect)
+  endoDims    <- character(0)   # dimnames assigned to the stats slices (expanded by type)
+  endoR       <- character(0)   # r-side names, aligned with endoDims
+  endoJasp    <- character(0)   # display names, aligned with endoDims
+  endoSave    <- character(0)   # per-slice copy of the formula term (for interactions)
 
-  if (length(indBoth) > 0) {
-    # create vectors that fit the duplicated effects for the "both" consider type arg
-    endosX <- vector("character", length = length(endosR) + length(indBoth))
-    newInd <- sort(c(indBoth + seq_len(length(indBoth)), indBoth + seq_len(length(indBoth)) - 1))
-    endosX[newInd] <- rep(endosR[indBoth], each = 2)
-    endosX[-newInd] <- endosR[-indBoth]
+  # one entry per effect (not expanded by slice): matches the generic "(type)" placeholder
+  # the interaction picker offers (.feedbackInteractionEffects); remstats always collapses a
+  # type-considered effect used in an interaction to a single slice, regardless of type count
+  endoGeneric     <- character(0)
+  endoGenericTerm <- character(0)
+  endoGenericDim  <- character(0)
 
-    endoScalingX <- vector("character", length = length(endoScaling) + length(indBoth))
-    endoScalingX[newInd] <- rep(endoScaling[indBoth], each = 2)
-    endoScalingX[-newInd] <- endoScaling[-indBoth]
+  for (i in seq_along(endos)) {
+    base  <- endos[[i]][["value"]]
+    jbase <- endos[[i]][[paste0("translatedName", sender)]]
+    scal  <- endos[[i]][[paste0("endogenousEffectsScaling", sender)]]
+    uniq  <- endos[[i]][[paste0("endogenousEffectsUnique", sender)]]
+    ctype <- endos[[i]][[paste0("endogenousEffectsConsiderType", sender)]]
 
-    endoUniqueX <- vector("character", length = length(endoUnique) + length(indBoth))
-    endoUniqueX[newInd] <- rep(endoUnique[indBoth], each = 2)
-    endoUniqueX[-newInd] <- endoUnique[-indBoth]
+    stem <- base
+    args <- character(0)
+    if (!(scal %in% c("none", ""))) {
+      args <- c(args, paste0("scaling = '", scal, "'"))
+      stem <- paste0(stem, ".", scal)
+    }
+    if (isTRUE(uniq)) {
+      args <- c(args, "unique = TRUE")
+      stem <- paste0(stem, ".unique")
+    }
 
-    endoTypeX <- vector("character", length = length(endoType) + length(indBoth))
-    endoTypeX[newInd] <- c("no", "yes")
-    endoTypeX[-newInd] <- endoType[-indBoth]
+    # resolve the effective consider_type; interact needs extend_riskset_by_type and >1 type
+    effType <- "ignore"
+    if (ctype %in% c("separate", "interact"))
+      effType <- if (ctype == "interact" && canInteract && nL > 1) "interact" else "separate"
+    if (effType != "ignore")
+      args <- c(args, paste0("consider_type = '", effType, "'"))
 
-    endosJaspX <- vector("character", length = length(endosJasp) + length(indBoth))
-    endosJaspX[newInd] <- rep(endosJasp[indBoth], each = 2)
-    endosJaspX[-newInd] <- endosJasp[-indBoth]
+    term <- paste0(base, "(", paste(args, collapse = ", "), ")")
+    endoEffects <- c(endoEffects, term)
+
+    if (effType == "separate" && nL > 1) {
+      d <- paste0(stem, ".", typeLevels)
+      j <- paste0(jbase, " (", typeLevels, ")")
+      r <- d
+    } else if (effType == "interact" && nL > 1) {
+      g <- expand.grid(inner = typeLevels, outer = typeLevels, stringsAsFactors = FALSE)
+      d <- paste0(stem, ".", g$outer, ".", g$inner)
+      j <- paste0(jbase, " (", g$outer, " × ", g$inner, ")")
+      r <- d
+    } else if (effType != "ignore") {
+      # a single event type: remstats returns one collapsed slice, keep the legacy label
+      d <- paste0(stem, ".type")
+      j <- paste0(jbase, "(type)")
+      r <- paste0(base, ".type")
+    } else {
+      d <- stem
+      j <- jbase
+      r <- base
+    }
+    endoDims <- c(endoDims, d)
+    endoR    <- c(endoR, r)
+    endoJasp <- c(endoJasp, j)
+    endoSave <- c(endoSave, rep(term, length(d)))
+
+    generic <- if (effType != "ignore") paste0(jbase, "(type)") else jbase
+    endoGeneric     <- c(endoGeneric, generic)
+    endoGenericTerm <- c(endoGenericTerm, term)
+    endoGenericDim  <- c(endoGenericDim, d[1])
   }
 
-  endoEffects <- paste0(endosX, "(")
+  endoEffectsStr <- paste(endoEffects, collapse = " + ")
 
-  for (i in 1:length(endosX)) {
-    # create the proper dimname
-    dimstmp <- endosX[i]
-
-    if (!(endoScalingX[i] %in% c("none", ""))) {
-      endoEffects[i] <- paste0(endoEffects[i], "scaling = '", endoScalingX[i], "', ")
-      dimstmp <- paste0(dimstmp, ".", endoScalingX[i])
-    }
-    if (endoUniqueX[i]) {
-      endoEffects[i] <- paste0(endoEffects[i], "unique = ", endoUniqueX[i], ", ")
-      dimstmp <- paste0(dimstmp, ".unique")
-    }
-
-    # consider type is a bit special given we can also have an endo effect with consider type and one without
-    if (endoTypeX[i] == "yes") {
-      endoEffects[i] <- paste0(endoEffects[i], "consider_type = TRUE, ")
-      dimstmp <- paste0(dimstmp, ".type")
-      endosJaspX[i] <- paste0(endosJaspX[i], "(type)")
-      endosX[i] <- paste0(endosX[i], ".type")
-    }
-    endoDims <- append(endoDims, dimstmp)
-  }
-
-  endoEffects <- paste0(endoEffects, ")")
-  endoEffects <- gsub(", )", ")", endoEffects)
-  endoEffectsSave <- endoEffects
-
-  endoEffects <- paste(endoEffects, collapse = " + ")
-
-  return(list(effects = endoEffects, effectsSave = endoEffectsSave, dims = endoDims,
-              jaspNames = endosJaspX, rNames = endosX))
+  return(list(effects = endoEffectsStr, effectsSave = endoSave, dims = endoDims,
+              jaspNames = endoJasp, rNames = endoR,
+              generic = endoGeneric, genericTerm = endoGenericTerm, genericDim = endoGenericDim))
 }
 
 
@@ -1802,16 +1689,19 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
   interEffects <- unlist(interEffects)
   interDims[1:length(interEffects)] <- interEffects
 
-  # work the endo effects
-  if (length(endoObj$rNames) > 0) {
+  # work the endo effects: match against the generic "(type)" placeholder the interaction
+  # picker offers (.feedbackInteractionEffects) rather than the (possibly type-expanded)
+  # per-slice jaspNames -- remstats collapses a type-considered effect used in an interaction
+  # to a single slice regardless of how many event types it has
+  if (length(endoObj$generic) > 0) {
     interTmps <- strsplit(interEffects, " : ", fixed = TRUE)
     interDimsTmps <- strsplit(interDims, " : ", fixed = TRUE)
     for (ii in 1:length(interTmps)) {
-      for (ee in 1:length(endoObj$rNames)) {
-        ind <- which(endoObj$jaspNames[ee] == interTmps[[ii]])
+      for (ee in 1:length(endoObj$generic)) {
+        ind <- which(endoObj$generic[ee] == interTmps[[ii]])
         if (length(ind) > 0) {
-          interTmps[[ii]][ind] <- gsub(endoObj$jaspNames[ee], endoObj$effectsSave[ee], interTmps[[ii]][ind], fixed = TRUE)
-          interDimsTmps[[ii]][ind] <- gsub(endoObj$jaspNames[ee], endoObj$dims[ee], interDimsTmps[[ii]][ind], fixed = TRUE)
+          interTmps[[ii]][ind] <- gsub(endoObj$generic[ee], endoObj$genericTerm[ee], interTmps[[ii]][ind], fixed = TRUE)
+          interDimsTmps[[ii]][ind] <- gsub(endoObj$generic[ee], endoObj$genericDim[ee], interDimsTmps[[ii]][ind], fixed = TRUE)
         }
       }
     }
@@ -1942,6 +1832,77 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
 }
 
 
+# ggplot2 plot of the predictive recall of observed events (remstimate::diagnostics()$recall):
+# the relative rank the model assigns each observed event over time, 0 = bottom, 1 = top
+.plotRecallHelper <- function(recall, role = "") {
+
+  pe <- recall$per_event
+  if (is.null(pe) || nrow(pe) == 0L) {
+    return(ggplot2::ggplot() +
+             ggplot2::annotate("text", x = 0, y = 0, label = gettext("Recall (no data)")) +
+             ggplot2::theme_void())
+  }
+
+  hasTime <- "time" %in% names(pe) && any(is.finite(pe$time))
+  med <- stats::median(pe$rel_rank, na.rm = TRUE)
+
+  ord <- order(pe$event)
+  x <- pe$event[ord]
+  y <- pe$rel_rank[ord]
+  k <- max(3L, min(length(y) - 1L, round(length(y) * 0.1)))
+  if (k %% 2 == 0) k <- k + 1L
+  ym <- tryCatch(stats::runmed(y, k = k), error = function(e) NULL)
+  smoothDf <- NULL
+  if (!is.null(ym)) {
+    sm <- tryCatch(stats::smooth.spline(x, ym), error = function(e) NULL)
+    smoothDf <- if (!is.null(sm)) data.frame(x = sm$x, y = sm$y) else data.frame(x = x, y = ym)
+  }
+
+  rankLabel    <- gettext("Rank")
+  medianLabel  <- gettext("Median rank")
+  smoothLabel  <- gettext("Smoothed trend")
+  legendLabels <- c(rankLabel, medianLabel, smoothLabel)
+
+  xRange     <- range(pe$event)
+  xBreaksAll <- jaspGraphs::getPrettyAxisBreaks(pe$event)
+  xBreaks    <- xBreaksAll[xBreaksAll >= xRange[1] & xBreaksAll <= xRange[2]]
+  yBreaks    <- jaspGraphs::getPrettyAxisBreaks(c(0, 1))
+
+  xScale <- if (hasTime) {
+    timeAtBreaks <- round(stats::approx(pe$event, pe$time, xout = xBreaks, rule = 2)$y, 1)
+    ggplot2::scale_x_continuous(name = gettext("Event"), breaks = xBreaks, limits = xRange,
+                                sec.axis = ggplot2::dup_axis(breaks = xBreaks, labels = timeAtBreaks,
+                                                             name = gettext("Time")))
+  } else {
+    ggplot2::scale_x_continuous(name = gettext("Event"), breaks = xBreaks, limits = xRange)
+  }
+
+  mainLabel <- if (nzchar(role))
+    gettextf("%1$s: recall (median rank = %2$.3f)", role, med)
+  else
+    gettextf("Recall (median rank = %1$.3f)", med)
+
+  p <- ggplot2::ggplot(pe, ggplot2::aes(x = event, y = rel_rank)) +
+    ggplot2::geom_point(ggplot2::aes(colour = rankLabel), shape = 16, alpha = 0.35, size = 2) +
+    ggplot2::geom_hline(ggplot2::aes(yintercept = med, colour = medianLabel), linetype = "dashed", linewidth = 0.7)
+
+  if (!is.null(smoothDf))
+    p <- p + ggplot2::geom_line(data = smoothDf, ggplot2::aes(x = x, y = y, colour = smoothLabel), linewidth = 1.2)
+
+  p <- p +
+    ggplot2::scale_colour_manual(name = NULL, breaks = legendLabels,
+                                 values = stats::setNames(c("black", "blue", "firebrick"), legendLabels)) +
+    xScale +
+    ggplot2::scale_y_continuous(name = gettext("Relative rank (0 = bottom, 1 = top)"),
+                                breaks = yBreaks, limits = range(yBreaks)) +
+    ggplot2::ggtitle(mainLabel) +
+    jaspGraphs::geom_rangeframe(sides = "bl") +
+    jaspGraphs::themeJaspRaw(legend.position = "bottom")
+
+  return(p)
+}
+
+
 
 
 
@@ -1965,31 +1926,43 @@ relationalEventModeling <- function(jaspResults, dataset, options) {
   indsIA <- grep(":", rNames)
   splitlist <- strsplit(rNames[indsIA], ":")
   rNames[indsIA] <- sapply(splitlist, function(x) {
-    x <- gsub(".std", "", x)
-    x <- gsub(".absolute", "", x)
+    x <- gsub(".std", "", x, fixed = TRUE)
+    x <- gsub(".absolute", "", x, fixed = TRUE)
+    x <- gsub(".prop", "", x, fixed = TRUE)
     paste0(x, collapse = ":")
   })
-  # now remove the period in the remaining effects
-  rNames <- gsub(".std", "", rNames)
-  rNames <- gsub(".absolute", "", rNames)
+  # now remove the scaling suffixes from the remaining effects
+  rNames <- gsub(".std", "", rNames, fixed = TRUE)
+  rNames <- gsub(".absolute", "", rNames, fixed = TRUE)
+  rNames <- gsub(".prop", "", rNames, fixed = TRUE)
   rNames <- tolower(rNames)
 
-  indVec <- c()
+  # a type-considered effect (consider_type = separate/interact) is offered as a single
+  # "(type)" picker entry, but remstats expands it into one slice per type (or type pair);
+  # match every remstimate slice that shares its stem instead of a single exact name
+  coefOut  <- character(0)
+  labelOut <- character(0)
   for (j in seq_len(length(jNames))) {
     ind <- match(jNames[j], rNames)
     # there should always be a match, however, sometimes for interactions,
     # the order is switched, so check that
-    if (is.na(ind)) {
-      if (grepl(":", jNames[j])) {
-        splitted <- unlist(strsplit(jNames[j], ":"))
-        jNames[j] <- paste0(splitted[2], ":", splitted[1])
-        ind <- grep(jNames[j], rNames)
-      }
+    if (is.na(ind) && grepl(":", jNames[j], fixed = TRUE)) {
+      splitted <- unlist(strsplit(jNames[j], ":", fixed = TRUE))
+      ind <- match(paste0(splitted[2], ":", splitted[1]), rNames)
     }
-    indVec <- c(indVec, ind)
+
+    if (!is.na(ind)) {
+      coefOut  <- c(coefOut, remstimateNames[ind])
+      labelOut <- c(labelOut, jaspNames[j])
+    } else if (endsWith(jNames[j], ".type")) {
+      stem <- sub("\\.type$", "", jNames[j])
+      inds <- which(rNames == stem | startsWith(rNames, paste0(stem, ".")))
+      coefOut  <- c(coefOut, remstimateNames[inds])
+      labelOut <- c(labelOut, remstimateNames[inds])
+    }
   }
 
-  return(remstimateNames[indVec])
+  return(list(coef = coefOut, label = labelOut))
 }
 
 

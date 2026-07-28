@@ -234,7 +234,7 @@ Form
 			title: qsTr("Riskset")
 			radioButtonsOnSameRow: false
 			id: riskset
-			info: qsTr("Specifies which dyads or actors are considered at risk for an event at each time point. 'Full' includes all possible pairs, 'Active' only current ones, 'Manual' allows custom exclusions.")
+			info: qsTr("Specifies which dyads or actors are considered at risk for an event at each time point. 'Full' includes all possible pairs, 'Active' only currently active ones, 'Active (saturated)' also adds the reverse dyads and other event types, and 'Manual' lets you supply the risk set from a file.")
 
 			RadioButton
 			{
@@ -251,28 +251,44 @@ Form
 			}
 			RadioButton
 			{
+				value: "active_saturated"
+				label: qsTr("Active (saturated)")
+				info: qsTr("Like 'Active', but also adds the reverse dyads: if A can send to B, then B can send to A. When a type variable is present, it likewise adds the other event types for observed sender-receiver pairs.")
+			}
+			RadioButton
+			{
 				value: "manual"
 				label: qsTr("Manual")
-				info: qsTr("Manually specify which dyads or actors are excluded from the risk set at each time point using a file.")
+				info: qsTr("Manually specify which dyads are at risk by uploading a file; observed dyads are always added to the risk set automatically.")
 
 				Label {
-					text: qsTr("Upload dyads to exclude:")
+					text: qsTr("Dyads to include:")
 					visible: riskset.value == "manual"
 				}
 
 				FileSelector
 				{
-					id: dyadExclude
-					name: "dyadExclude"
+					id: dyadInclude
+					name: "dyadInclude"
 					label: ""
-					placeholderText: qsTr("e.g., home/Data/dyadExclude.csv")
+					placeholderText: qsTr("e.g., home/Data/dyadInclude.csv")
 					filter: "*.csv *.txt"
 					save: false
 					fieldWidth: 180 * preferencesModel.uiScale
 					visible: riskset.value == "manual"
-					info: qsTr(" Becomes visible when risket is chosen to be manual: Upload a CSV or TXT file listing dyads to be excluded from the risk set at any time point.")
+					info: qsTr("Becomes visible when riskset is set to manual: upload a CSV or TXT file listing the dyads that form the risk set (columns named 'actor1' and 'actor2'). Observed dyads are added automatically.")
 				}
 			}
+		}
+
+		CheckBox
+		{
+			name: "extendRisksetByType"
+			label: qsTr("Extend risk set by type")
+			id: extendByType
+			checked: false
+			enabled: typeVar.count > 0
+			info: qsTr("Only available when a type variable is set. When enabled, the risk set includes every event type for each dyad at risk, so effects can distinguish between event types (needed for the 'interact' consider-type option).")
 		}
 	}
 
@@ -424,10 +440,12 @@ Form
 					DropDown {
 						visible: typeVar.count > 0
 						name: "endogenousEffectsConsiderType"
-						Layout.preferredWidth: 70
-						values: [{ label: qsTr("No"), value : "no"}, { label: qsTr("Yes"), value : "yes" }, { label: qsTr("Both"), value : "both" }]
+						Layout.preferredWidth: 90
+						values: extendByType.checked
+							? [{ label: qsTr("Ignore"), value: "ignore" }, { label: qsTr("Separate"), value: "separate" }, { label: qsTr("Interact"), value: "interact" }]
+							: [{ label: qsTr("Ignore"), value: "ignore" }, { label: qsTr("Separate"), value: "separate" }]
 						enabled: inclEndoEff.checked
-						info: qsTr("For multi-type event models: specify whether the effect should be computed per event type, across types, or both.")
+						info: qsTr("How to handle event types for this effect: 'Ignore' pools all types, 'Separate' computes one effect per type, and 'Interact' computes one per ordered pair of types (requires 'Extend risk set by type').")
 					}
 					CheckBox {
 						name: "endogenousEffectsUnique"
@@ -454,8 +472,8 @@ Form
 				name: "endogenousEffectsSender"
 				id: endogenousEffectsSender
 				info: qsTr("For the sender in actor-oriented models, choose which endogenous effects to include. Effects reflect sender-based network dynamics.")
-				source: [{ values: effects.varsActorSender }] 
-				headerLabels: [qsTr("Include"), qsTr("Scaling"), qsTr("Consider type")]
+				source: [{ values: effects.varsActorSender }]
+				headerLabels: typeVar.count > 0 ? [qsTr("Include"), qsTr("Scaling"), qsTr("Consider type")] : [qsTr("Include"), qsTr("Scaling")]
 				rowComponent: RowLayout {
 					Text { Layout.preferredWidth: 200; text: effects.translated[rowValue] }
 					TextField { name: "translatedNameSender"; value: effects.translated[rowValue]; visible: false; info: qsTr("Internal use: Translated effect label for R backend.") }
@@ -467,12 +485,15 @@ Form
 						enabled: !effects.varsScalingNone.includes(rowValue) & inclEndoEffSend.checked
 						info: qsTr("Select the scaling method for this sender effect: 'none', 'proportion', or 'standardized'.")
 					}
-					CheckBox {
+					DropDown {
+						visible: typeVar.count > 0 && !effects.varsNotConsiderType.includes(rowValue)
 						name: "endogenousEffectsConsiderTypeSender"
-						Layout.preferredWidth: 80
-						visible: !effects.varsNotConsiderType.includes(rowValue)
+						Layout.preferredWidth: 90
+						values: extendByType.checked
+							? [{ label: qsTr("Ignore"), value: "ignore" }, { label: qsTr("Separate"), value: "separate" }, { label: qsTr("Interact"), value: "interact" }]
+							: [{ label: qsTr("Ignore"), value: "ignore" }, { label: qsTr("Separate"), value: "separate" }]
 						enabled: inclEndoEffSend.checked
-						info: qsTr("Specify whether this effect should be computed per event type (if multiple types are modeled).")
+						info: qsTr("How to handle event types for this sender effect: 'Ignore' pools all types, 'Separate' computes one per type, and 'Interact' one per ordered pair of types (requires 'Extend risk set by type').")
 					}
 					CheckBox {
 						name: "endogenousEffectsUniqueSender"
@@ -739,16 +760,6 @@ Form
 			title: qsTr("Statistics Options")
 			info: qsTr("Configure how event statistics are calculated, including how to handle simultaneous events, the portion of the event history to use, and which time intervals to analyze.")
 
-			RadioButtonGroup
-			{
-				name: "simultaneousEvents"
-				title: qsTr("Simultaneous events")
-				radioButtonsOnSameRow: true
-				info: qsTr("Choose how to handle multiple events that occur at exactly the same time: join them into a single event ('Join') or treat each event separately ('Split').")
-				RadioButton { label: qsTr("Join"); value: "join"; checked: true }
-				RadioButton { label: qsTr("Split"); value: "split" }
-			}
-
 			DropDown {
 				id: eventHistory
 				label: qsTr("Consider event history")
@@ -797,15 +808,15 @@ Form
 
 			RowLayout
 			{
-				Label { text: qsTr("Compute statistics from timepoint") }
+				Label { text: qsTr("Fit model to events") }
 				IntegerField
 				{
 					name: "timepointInputLower"
 					label: ""
-					min: 1
-					defaultValue: 1
+					min: 2
+					defaultValue: 2
 					fieldWidth: 40
-					info: qsTr("First and last time point to include in the computation of event statistics (use 'Inf' for all available data).")
+					info: qsTr("First and last event to include when fitting the model. The first event has no history and is only used to initialise the event statistics, so fitting starts at event 2 (use 'Inf' for the last event).")
 				}
 				Label { text: qsTr("to") }
 				TextField
@@ -900,6 +911,15 @@ Form
 					info: qsTr("Show a plot comparing observed and expected waiting times under the model.")
 				}
 
+				CheckBox
+				{
+					name: "diagnosticPlotRecall"
+					label: qsTr("Recall")
+					enabled: diagPlots.checked
+					checked: false
+					info: qsTr("Show a plot of the predictive recall of observed events under the model: the relative rank the model assigns to each observed event (0 = bottom, 1 = top) over time.")
+				}
+
 				Text
 				{
 					text: qsTr("Residuals plot")
@@ -914,27 +934,11 @@ Form
 					implicitWidth: 250 * preferencesModel.uiScale
 					rSource: "effectsForPlot"
 					info: qsTr("Select endogenous effects for which to plot model residuals.")
-					rowComponent: RowLayout { 
-						Text { Layout.preferredWidth: 300; text: rowValue }
+					rowComponent: RowLayout {
+						Text { Layout.preferredWidth: 200; text: rowValue }
 						CheckBox { Layout.preferredWidth: 40; name: "includePlotEffect"; info: qsTr("Tick to include a residual plot for this effect.") }
 					}
 				}
-			}
-		}
-
-		RowLayout 
-		{
-			CheckBox
-			{
-				name: "oldEffectsSaved"
-				label: qsTr("Save old effects")
-				checked: false
-				info: qsTr("If checked, previously estimated effects will be saved internally to speed up computation. However, this can lead to memory issues with large models.")
-			}
-			HelpButton
-			{
-				toolTip: qsTr("Click for more information")
-				helpPage: "forQml/tooltipSaveEffects"
 			}
 		}
 	}
